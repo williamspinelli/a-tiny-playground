@@ -10,6 +10,10 @@ class Agrostick
 {
 public:
     void begin() {
+        for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
+            pinMode(AGROSTICK_BUTTON[i].pin,
+                    AGROSTICK_BUTTON[i].internalPullup ? INPUT_PULLUP : INPUT);
+
         static HIDSubDescriptor node(HID_REPORT_DESCRIPTOR, sizeof(HID_REPORT_DESCRIPTOR));
         HID().AppendDescriptor(&node);
 
@@ -96,9 +100,9 @@ private:
 
     static constexpr uint8_t AXIS_COUNT {3};
     static constexpr AgrostickAxis AGROSTICK_AXIS[AXIS_COUNT] {
-        {0, 1023, 512, 0, false, A0},
-        {0, 1023, 512, 0, false, A1},
-        {0, 1023, 512, 0, false, A2},
+        {85, 935, 512, 30, false, A0},
+        {85, 935, 515, 30, true, A1},
+        {95, 925, 500, 30, false, A2},
     };
 
     int16_t     m_rawAxisAi[AXIS_COUNT] {};
@@ -129,30 +133,27 @@ private:
 
     // ** Digital buttons management ** //
     struct AgrostickButton {
-        int16_t     threshold;
         bool        reversed;
+        bool        internalPullup;
         uint8_t     pin;
     };
     static constexpr uint8_t BUTTON_COUNT {7};
     static constexpr AgrostickButton AGROSTICK_BUTTON[BUTTON_COUNT] {
-        {512, false, A3},
-        {512, false, A4},
-        {512, false, A5},
-        {512, false, A6},
-        {512, false, A7},
-        {512, false, A8},
-        {512, false, A9},
+        {true, true, 2},
+        {true, true, 3},
+        {true, true, 4},
+        {true, true, 5},
+        {false, false, 6},
+        {false, false, 7},
+        {false, false, 8},
     };
 
-    int16_t     m_rawButtonAi[BUTTON_COUNT] {};
     uint8_t     m_button[BUTTON_COUNT] {};
     uint8_t     m_oldButton[BUTTON_COUNT] {};
 
     void readButton(uint8_t index) {
-        auto value = analogRead(AGROSTICK_BUTTON[index].pin);
-        m_rawButtonAi[index] = value;
+        auto button = digitalRead(AGROSTICK_BUTTON[index].pin);
 
-        uint8_t button {static_cast<uint8_t>(((value > AGROSTICK_BUTTON[index].threshold) ? 1 : 0))};
         if (AGROSTICK_BUTTON[index].reversed)
             button ^= 1;
 
@@ -165,12 +166,12 @@ private:
 #ifdef DEBUG_AGROSTICK
         char buffer[50];
         for (uint8_t i = 0; i < BUTTON_COUNT; ++i) {
-            sprintf(buffer, "Button #%d: %d/%d [raw: %d]", i, m_oldButton[i], m_button[i], m_rawButtonAi[i]);
+            sprintf(buffer, "B%d: %d/%d", i, m_oldButton[i], m_button[i]);
             Serial.println(buffer);
         }
 
         for (uint8_t i = 0; i < AXIS_COUNT; ++i) {
-            sprintf(buffer, "Axis #%d: %d [raw: %d]", i, m_axis[i], m_rawAxisAi[i]);
+            sprintf(buffer, "A%d: %d [raw: %d]", i, m_axis[i], m_rawAxisAi[i]);
             Serial.println(buffer);
         }
 #endif
