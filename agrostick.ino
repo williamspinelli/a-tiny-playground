@@ -1,4 +1,6 @@
+#include <EEPROM.h>
 #include <HID.h>
+#include <Mouse.h>
 
 #ifndef _USING_HID
 #error "Agrostick require a USB MCU with PluggableHID core enabled."
@@ -13,9 +15,15 @@ public:
         for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
             pinMode(AGROSTICK_BUTTON[i].pin,
                     AGROSTICK_BUTTON[i].internalPullup ? INPUT_PULLUP : INPUT);
+        pinMode(PIN_JOYSTCK_MODE, OUTPUT);
+        pinMode(PIN_MOUSE_MODE, OUTPUT);
 
         static HIDSubDescriptor node(HID_REPORT_DESCRIPTOR, sizeof(HID_REPORT_DESCRIPTOR));
         HID().AppendDescriptor(&node);
+
+        Mouse.begin();
+
+        m_joystickEmulation = (EEPROM[0] == EEPROM_MAGIC_VALUE);
 
 #ifdef DEBUG_AGROSTICK
         Serial.begin(9600);
@@ -27,23 +35,31 @@ public:
             readAxis(i);
         for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
             readButton(i);
+
+        if (m_switchModeCount > 0 && m_button[0] && m_button[1] && m_button[2] && m_button[3]) {
+            m_switchModeCount--;
+            if (m_switchModeCount == 0) {
+                EEPROM[0] = (EEPROM[0] != EEPROM_MAGIC_VALUE) ? EEPROM_MAGIC_VALUE : 0x00;
+                m_joystickEmulation = (EEPROM[0] == EEPROM_MAGIC_VALUE);
+            }
+        } else {
+            m_switchModeCount = SWITCH_MODE_TIMER;
+        }
+    }
+
+    void writeOutput() {
+        digitalWrite(PIN_JOYSTCK_MODE, m_joystickEmulation ? HIGH : LOW);
+        digitalWrite(PIN_MOUSE_MODE, m_joystickEmulation ? LOW : HIGH);
     }
 
     void sendReport() {
-        static uint8_t hidReport[7];
-        uint8_t index {0};
-
-        uint8_t buttonBitmask {0};
-        for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
-            buttonBitmask |= (m_button[i] << i);
-        hidReport[index++] = buttonBitmask;
-
-        for (uint8_t i = 0; i < AXIS_COUNT; ++i) {
-            hidReport[index++] = static_cast<uint8_t>(m_axis[i]);
-            hidReport[index++] = static_cast<uint8_t>(m_axis[i] >> 8);
+        if (m_joystickEmulation) {
+            sendJoystickReport();
+            sendEmptyMouseReport();
+        } else {
+            sendEmptyJoystickReport();
+            sendMouseReport();
         }
-
-        HID().SendReport(REPORT_ID, hidReport, sizeof(hidReport));
         sendSerialDebugInfo();
     }
 
@@ -55,7 +71,27 @@ public:
 #endif
     }
 
+    bool getButtonValue(uint8_t i) {
+        return m_button[i];
+    }
+
+    int8_t getVirtualMouseValue(uint8_t i, int8_t range) const {
+        return static_cast<int8_t>(map(m_axis[i], -32767, 32767, -range, range));
+    }
+
 private:
+#ifndef DEBUG_AGROSTICK
+    static constexpr uint8_t SWITCH_MODE_TIMER {100};
+#else
+    static constexpr uint8_t SWITCH_MODE_TIMER {4};
+#endif
+    bool        m_joystickEmulation;
+    uint8_t     m_switchModeCount {SWITCH_MODE_TIMER};
+
+    static constexpr uint8_t PIN_JOYSTCK_MODE {11};
+    static constexpr uint8_t PIN_MOUSE_MODE {12};
+    static constexpr uint8_t EEPROM_MAGIC_VALUE {0x44};
+
     // ** HID descriptor details ** //
     static constexpr uint8_t REPORT_ID {0x03};
     static constexpr uint8_t HID_REPORT_DESCRIPTOR[] PROGMEM {
@@ -176,6 +212,57 @@ private:
         }
 #endif
     }
+
+    void sendMouseReport() {
+        Mouse.move(getVirtualMouseValue(0, 18), getVirtualMouseValue(1, 18),
+                getVirtualMouseValue(2, 2));
+        
+        constexpr uint8_t MOUSE_BUTTON[3] = {MOUSE_MIDDLE, MOUSE_LEFT, MOUSE_RIGHT};
+        for (uint8_t i = 0; i < 3; ++i) {
+            if (m_button[4 + i]) {
+                if (!Mouse.isPressed(MOUSE_BUTTON[i]))
+                    Mouse.press(MOUSE_BUTTON[i]);
+            } else {
+                if (Mouse.isPressed(MOUSE_BUTTON[i]))
+                    Mouse.release(MOUSE_BUTTON[i]);
+            }
+        }
+    }
+
+    void sendEmptyMouseReport() {
+        Mouse.move(0, 0, 0);
+        
+        constexpr uint8_t MOUSE_BUTTON[3] = {MOUSE_MIDDLE, MOUSE_LEFT, MOUSE_RIGHT};
+        for (uint8_t i = 0; i < 3; ++i) {
+            if (Mouse.isPressed(MOUSE_BUTTON[i]))
+                Mouse.release(MOUSE_BUTTON[i]);
+        }
+    }
+
+    void sendJoystickReport() {
+        static uint8_t hidReport[7];
+        uint8_t index {0};
+
+        uint8_t buttonBitmask {0};
+        for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
+            buttonBitmask |= (m_button[i] << i);
+        hidReport[index++] = buttonBitmask;
+
+        for (uint8_t i = 0; i < AXIS_COUNT; ++i) {
+            hidReport[index++] = static_cast<uint8_t>(m_axis[i]);
+            hidReport[index++] = static_cast<uint8_t>(m_axis[i] >> 8);
+        }
+
+        HID().SendReport(REPORT_ID, hidReport, sizeof(hidReport));
+    }
+
+    void sendEmptyJoystickReport() {
+        static uint8_t hidReport[7];
+        for (uint8_t i = 0; i < sizeof(hidReport); ++i)
+            hidReport[i] = 0;
+
+        HID().SendReport(REPORT_ID, hidReport, sizeof(hidReport));
+    }
 };
 
 constexpr uint8_t Agrostick::HID_REPORT_DESCRIPTOR[] PROGMEM;
@@ -192,7 +279,9 @@ void loop() {
     static uint32_t nextTick = 0;
     if (millis() >= nextTick) {
         agrostick.readInputs();
+        agrostick.writeOutput();
         agrostick.sendReport();
+
         nextTick += agrostick.nextTick();
     }
 }
